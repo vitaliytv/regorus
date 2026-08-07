@@ -1,0 +1,23 @@
+tests/interpreter/cases/builtins/objects/json.patch.yaml
+  s_d400566f6f4264::t_80f2df4db5db47 250-259
+  s_d400566f6f4264::t_39f5a6c84f126b 291,300-301
+src/builtins/json_patch.rs
+  s_d400566f6f4264::t_593e2fdfc1e2bb 225,330
+  s_d400566f6f4264::t_80f2df4db5db47 380-385
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "d65d65b7e14c771295cdc22ef4675719be6ac6ac",
+  "prompts": {},
+  "sessions": {
+    "s_d400566f6f4264": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fdb20-136d-7b82-83ee-c006495b10aa",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Vitalii Tverdokhlib <v@nitra.ai>"
+    }
+  }
+}
