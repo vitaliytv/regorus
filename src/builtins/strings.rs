@@ -232,6 +232,42 @@ fn apply_width(w: Width, s: String) -> String {
     }
 }
 
+// Quote a string the same way Go's `strconv.Quote` (and therefore OPA's `%q`
+// format verb) does: wrap in double quotes, escape `"` and `\`, use short
+// escapes for the common control characters, `\xNN`/`\uNNNN`/`\UNNNNNNNN` for
+// the rest of the non-printable characters, and leave every other (including
+// non-ASCII) printable character untouched. Note that, unlike `json.marshal`,
+// this does NOT HTML-escape `<`, `>` or `&`.
+fn go_quote_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{0007}' => out.push_str("\\a"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{000B}' => out.push_str("\\v"),
+            c if is_go_printable(c) => out.push(c),
+            c if (c as u32) <= 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (c as u32) <= 0xffff => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push_str(&format!("\\U{:08x}", c as u32)),
+        }
+    }
+    out.push('"');
+    out
+}
+
+// Approximates Go's `unicode.IsPrint`: printable characters are everything
+// except control characters and non-ASCII-space whitespace/separators.
+fn is_go_printable(c: char) -> bool {
+    !c.is_control() && (c == ' ' || !c.is_whitespace())
+}
+
 fn sprintf(span: &Span, params: &[Ref<Expr>], args: &[Value], _strict: bool) -> Result<Value> {
     let name = "sprintf";
     ensure_args_count(span, name, params, args, 2)?;
@@ -406,6 +442,8 @@ fn sprintf(span: &Span, params: &[Ref<Expr>], args: &[Value], _strict: bool) -> 
             (_, Value::Number(_)) => {
                 bail!(args_span.error(&format!("number specified for format verb {verb}.")));
             }
+
+            ('q', Value::String(sv)) => s += &go_quote_string(sv.as_ref()),
 
             ('+', _) if chars.next() == Some('v') => {
                 bail!(args_span.error("Go-syntax fields names format verm %#v is not supported."));
@@ -674,4 +712,46 @@ fn upper(span: &Span, params: &[Ref<Expr>], args: &[Value], _strict: bool) -> Re
     ensure_args_count(span, name, params, args, 1)?;
     let s = ensure_string(name, &params[0], &args[0])?;
     Ok(Value::String(s.to_uppercase().into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Reference values below were captured from `sprintf("%q", [...])`
+    // evaluated with OPA (github.com/open-policy-agent/opa), which in turn
+    // delegates to Go's `strconv.Quote`.
+    #[test]
+    fn quote_string_matches_go_strconv_quote() {
+        assert_eq!(go_quote_string("foo"), "\"foo\"");
+        assert_eq!(go_quote_string(""), "\"\"");
+        assert_eq!(go_quote_string("a\"b"), "\"a\\\"b\"");
+        assert_eq!(go_quote_string("back\\slash"), "\"back\\\\slash\"");
+        assert_eq!(go_quote_string("tab\there"), "\"tab\\there\"");
+        assert_eq!(go_quote_string("nl\nhere"), "\"nl\\nhere\"");
+        assert_eq!(go_quote_string("cr\rhere"), "\"cr\\rhere\"");
+        assert_eq!(go_quote_string("emoji\u{1F642}"), "\"emoji\u{1F642}\"");
+        assert_eq!(
+            go_quote_string("\u{044E}\u{043D}\u{0456}\u{043A}\u{043E}\u{0434}"),
+            "\"\u{044E}\u{043D}\u{0456}\u{043A}\u{043E}\u{0434}\""
+        );
+        // %q does NOT HTML-escape < > & (unlike json.marshal).
+        assert_eq!(go_quote_string("a<b>&c"), "\"a<b>&c\"");
+
+        // Short escapes for the other named control characters.
+        assert_eq!(go_quote_string("\u{0007}"), "\"\\a\"");
+        assert_eq!(go_quote_string("\u{0008}"), "\"\\b\"");
+        assert_eq!(go_quote_string("\u{000C}"), "\"\\f\"");
+        assert_eq!(go_quote_string("\u{000B}"), "\"\\v\"");
+
+        // Other C0 control characters fall back to \xNN.
+        assert_eq!(go_quote_string("x\u{001F}y"), "\"x\\x1fy\"");
+        // DEL (0x7f) is also escaped as \x7f.
+        assert_eq!(go_quote_string("x\u{007F}y"), "\"x\\x7fy\"");
+        // Non-breaking space is a non-ASCII-space separator: not printable,
+        // and within the BMP so it uses \uNNNN.
+        assert_eq!(go_quote_string("x\u{00A0}y"), "\"x\\u00a0y\"");
+        // Astral-plane printable characters are left as-is.
+        assert_eq!(go_quote_string("x\u{1F600}y"), "\"x\u{1F600}y\"");
+    }
 }
