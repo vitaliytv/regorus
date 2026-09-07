@@ -96,6 +96,11 @@ cases:
         # %q must NOT HTML-escape < > & (that is what distinguishes it from
         # json.marshal).
         angle_and_amp := sprintf("%q", ["a<b>&c"])
+        soft_hyphen := sprintf("%q", ["\u00ad"])
+        zero_width_space := sprintf("%q", ["\u200b"])
+        private_use := sprintf("%q", ["\ue000"])
+        noncharacter := sprintf("%q", ["\ufdd0"])
+        unassigned := sprintf("%q", ["\u0378"])
         empty := sprintf("%q", [""])
     query: data.test
     want_result:
@@ -108,7 +113,33 @@ cases:
       emoji: "\"emoji🙂\""
       non_ascii: "\"юнікод\""
       angle_and_amp: "\"a<b>&c\""
+      soft_hyphen: "\"\\u00ad\""
+      zero_width_space: "\"\\u200b\""
+      private_use: "\"\\ue000\""
+      noncharacter: "\"\\ufdd0\""
+      unassigned: "\"\\u0378\""
       empty: "\"\""
+
+  - note: "%q width and precision"
+    data: {}
+    modules:
+      - |
+        package test
+
+        padded := sprintf("%10q", ["foo"])
+        zero_padded := sprintf("%05q", ["a"])
+        truncated := sprintf("%.3q", ["abcdef"])
+        empty := sprintf("%.0q", ["abcdef"])
+        unicode_width := sprintf("%6q", ["🙂"])
+        unicode_precision := sprintf("%.1q", ["🙂x"])
+    query: data.test
+    want_result:
+      padded: "     \"foo\""
+      zero_padded: "00\"a\""
+      truncated: "\"abc\""
+      empty: "\"\""
+      unicode_width: "   \"🙂\""
+      unicode_precision: "\"🙂\""
 
   - note: "%q on a number still errors"
     data: {}

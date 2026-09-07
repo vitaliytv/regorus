@@ -20,6 +20,8 @@ use crate::*;
 
 use anyhow::{bail, Result};
 
+mod go_is_print;
+
 pub fn register(m: &mut builtins::BuiltinsMap<&'static str, builtins::BuiltinFcn>) {
     m.insert("concat", (concat, 2));
     m.insert("contains", (contains, 2));
@@ -217,6 +219,7 @@ fn to_string(v: &Value, unescape: bool) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Width {
     None,
     LeadingZeros(usize),
@@ -232,16 +235,29 @@ fn apply_width(w: Width, s: String) -> String {
     }
 }
 
-// Quote a string the same way Go's `strconv.Quote` (and therefore OPA's `%q`
-// format verb) does: wrap in double quotes, escape `"` and `\`, use short
-// escapes for the common control characters, `\xNN`/`\uNNNN`/`\UNNNNNNNN` for
-// the rest of the non-printable characters, and leave every other (including
-// non-ASCII) printable character untouched. Note that, unlike `json.marshal`,
-// this does NOT HTML-escape `<`, `>` or `&`.
-fn go_quote_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
+const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+
+// Append a string quoted like Go's `strconv.Quote` (and therefore OPA's `%q`).
+// Precision truncates the input by Unicode scalar values before quoting, while
+// width pads the quoted result by Unicode scalar values.
+fn append_go_quoted(out: &mut String, input: &str, width: Width) -> Result<()> {
+    let input = match width {
+        Width::Decimals(precision) => truncate_chars(input, precision),
+        _ => input,
+    };
+
+    let (padding, padding_char) = match width {
+        Width::Cell(width) => (width.saturating_sub(go_quoted_len(input)), ' '),
+        Width::LeadingZeros(width) => (width.saturating_sub(go_quoted_len(input)), '0'),
+        Width::None | Width::Decimals(_) => (0, ' '),
+    };
+    for _ in 0..padding {
+        out.push(padding_char);
+        enforce_limit()?;
+    }
+
     out.push('"');
-    for c in s.chars() {
+    for c in input.chars() {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
@@ -252,20 +268,45 @@ fn go_quote_string(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             '\u{000B}' => out.push_str("\\v"),
-            c if is_go_printable(c) => out.push(c),
-            c if (c as u32) <= 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c if (c as u32) <= 0xffff => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push_str(&format!("\\U{:08x}", c as u32)),
+            c if go_is_print::is_print(c) => out.push(c),
+            c if (c as u32) <= 0x7f => append_hex_escape(out, 'x', c as u32, 2),
+            c if (c as u32) <= 0xffff => append_hex_escape(out, 'u', c as u32, 4),
+            c => append_hex_escape(out, 'U', c as u32, 8),
         }
+        enforce_limit()?;
     }
     out.push('"');
-    out
+    enforce_limit()
 }
 
-// Approximates Go's `unicode.IsPrint`: printable characters are everything
-// except control characters and non-ASCII-space whitespace/separators.
-fn is_go_printable(c: char) -> bool {
-    !c.is_control() && (c == ' ' || !c.is_whitespace())
+fn truncate_chars(s: &str, count: usize) -> &str {
+    s.char_indices()
+        .nth(count)
+        .map_or(s, |(byte_index, _)| &s[..byte_index])
+}
+
+fn go_quoted_len(s: &str) -> usize {
+    s.chars().fold(2usize, |len, c| {
+        let escaped_len = match c {
+            '"' | '\\' | '\u{0007}' | '\u{0008}' | '\u{000C}' | '\n' | '\r' | '\t' | '\u{000B}' => {
+                2
+            }
+            c if go_is_print::is_print(c) => 1,
+            c if (c as u32) <= 0x7f => 4,
+            c if (c as u32) <= 0xffff => 6,
+            _ => 10,
+        };
+        len.saturating_add(escaped_len)
+    })
+}
+
+fn append_hex_escape(out: &mut String, prefix: char, value: u32, digits: usize) {
+    out.push('\\');
+    out.push(prefix);
+    for digit in (0..digits).rev() {
+        let nibble = ((value >> (digit * 4)) & 0x0f) as usize;
+        out.push(LOWER_HEX[nibble] as char);
+    }
 }
 
 fn sprintf(span: &Span, params: &[Ref<Expr>], args: &[Value], _strict: bool) -> Result<Value> {
@@ -443,7 +484,7 @@ fn sprintf(span: &Span, params: &[Ref<Expr>], args: &[Value], _strict: bool) -> 
                 bail!(args_span.error(&format!("number specified for format verb {verb}.")));
             }
 
-            ('q', Value::String(sv)) => s += &go_quote_string(sv.as_ref()),
+            ('q', Value::String(sv)) => append_go_quoted(&mut s, sv.as_ref(), width)?,
 
             ('+', _) if chars.next() == Some('v') => {
                 bail!(args_span.error("Go-syntax fields names format verm %#v is not supported."));
@@ -718,6 +759,12 @@ fn upper(span: &Span, params: &[Ref<Expr>], args: &[Value], _strict: bool) -> Re
 mod tests {
     use super::*;
 
+    fn go_quote_string(s: &str) -> String {
+        let mut out = String::new();
+        append_go_quoted(&mut out, s, Width::None).expect("quoting must succeed");
+        out
+    }
+
     // Reference values below were captured from `sprintf("%q", [...])`
     // evaluated with OPA (github.com/open-policy-agent/opa), which in turn
     // delegates to Go's `strconv.Quote`.
@@ -751,7 +798,30 @@ mod tests {
         // Non-breaking space is a non-ASCII-space separator: not printable,
         // and within the BMP so it uses \uNNNN.
         assert_eq!(go_quote_string("x\u{00A0}y"), "\"x\\u00a0y\"");
+        // Format, private-use, noncharacter, and unassigned scalars are not
+        // printable under Go's Unicode category definition.
+        assert_eq!(go_quote_string("x\u{00AD}y"), "\"x\\u00ady\"");
+        assert_eq!(go_quote_string("x\u{200B}y"), "\"x\\u200by\"");
+        assert_eq!(go_quote_string("x\u{E000}y"), "\"x\\ue000y\"");
+        assert_eq!(go_quote_string("x\u{FDD0}y"), "\"x\\ufdd0y\"");
+        assert_eq!(go_quote_string("x\u{0378}y"), "\"x\\u0378y\"");
         // Astral-plane printable characters are left as-is.
         assert_eq!(go_quote_string("x\u{1F600}y"), "\"x\u{1F600}y\"");
+    }
+
+    #[test]
+    fn quote_string_applies_supported_width_and_precision() {
+        let quote = |input, width| {
+            let mut out = String::new();
+            append_go_quoted(&mut out, input, width).expect("quoting must succeed");
+            out
+        };
+
+        assert_eq!(quote("foo", Width::Cell(10)), "     \"foo\"");
+        assert_eq!(quote("a", Width::LeadingZeros(5)), "00\"a\"");
+        assert_eq!(quote("abcdef", Width::Decimals(3)), "\"abc\"");
+        assert_eq!(quote("abc", Width::Decimals(0)), "\"\"");
+        assert_eq!(quote("\u{1F642}", Width::Cell(6)), "   \"\u{1F642}\"");
+        assert_eq!(quote("\u{1F642}x", Width::Decimals(1)), "\"\u{1F642}\"");
     }
 }
