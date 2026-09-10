@@ -4,7 +4,7 @@
 
 // Adapted from Go 1.27.1's generated strconv/isprint.go tables (Unicode 17.0.0).
 // Keep this data synchronized with the Go version used as the OPA compatibility
-// reference. The four tables below occupy 3,560 bytes.
+// reference. The four tables below occupy 3,592 bytes.
 
 const IS_PRINT_16: &[u16] = &[
     0x0020, 0x007e, 0x00a1, 0x0377, 0x037a, 0x037f, 0x0384, 0x0556, 0x0559, 0x058a, 0x058d, 0x05c7,
