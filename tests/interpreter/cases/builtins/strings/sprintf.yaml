@@ -98,6 +98,8 @@ cases:
         angle_and_amp := sprintf("%q", ["a<b>&c"])
         soft_hyphen := sprintf("%q", ["\u00ad"])
         zero_width_space := sprintf("%q", ["\u200b"])
+        line_separator := sprintf("%q", ["a\u2028b"])
+        paragraph_separator := sprintf("%q", ["a\u2029b"])
         private_use := sprintf("%q", ["\ue000"])
         noncharacter := sprintf("%q", ["\ufdd0"])
         unassigned := sprintf("%q", ["\u0378"])
@@ -115,6 +117,8 @@ cases:
       angle_and_amp: "\"a<b>&c\""
       soft_hyphen: "\"\\u00ad\""
       zero_width_space: "\"\\u200b\""
+      line_separator: "\"a\\u2028b\""
+      paragraph_separator: "\"a\\u2029b\""
       private_use: "\"\\ue000\""
       noncharacter: "\"\\ufdd0\""
       unassigned: "\"\\u0378\""
